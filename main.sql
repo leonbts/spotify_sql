@@ -1,5 +1,6 @@
 use spotify_db;
 
+-- check data
 select count(*) from audio_features;
 select count(*) from sp_track;
 select count(*) from sp_artist;
@@ -7,12 +8,13 @@ select count(*) from sp_artist_release;
 select count(*) from sp_artist_track;
 select count(*) from sp_release;
 
+-- set indexes
+
 ALTER TABLE sp_track MODIFY track_id VARCHAR(22);
 CREATE INDEX idx_track_id ON sp_track(track_id);
 
 DROP INDEX idx_track_id ON sp_artist_track;
 SHOW INDEX FROM sp_artist_track;
-
 
 SELECT 
     MAX(CHAR_LENGTH(track_id)) AS max_length
@@ -46,12 +48,11 @@ DROP INDEX idx_track_id ON sp_artist_track;
 
 SHOW INDEX FROM sp_artist_release;
 
-
-select * from sp_release;
+-- check indexes
 SHOW INDEX FROM audio_features; -- isrc
 SHOW INDEX FROM sp_artist; -- artist_id
-SHOW INDEX FROM sp_artist_release; -- no index
-SHOW INDEX FROM sp_artist_track;  -- 
+SHOW INDEX FROM sp_artist_release; -- 2 ind
+SHOW INDEX FROM sp_artist_track;  -- 2 ind
 SHOW INDEX FROM sp_release; -- release_id
 SHOW INDEX FROM sp_track; -- track_id
 
@@ -83,17 +84,17 @@ ON DELETE CASCADE
 ON UPDATE CASCADE;
 
 ALTER TABLE sp_artist_track
-ADD CONSTRAINT fk_artist_track_artist
-FOREIGN KEY (artist_id) REFERENCES sp_artist(artist_id)
-ON DELETE CASCADE
-ON UPDATE CASCADE;
-
-ALTER TABLE sp_artist_track
 ADD CONSTRAINT fk_artist_track_track
 FOREIGN KEY (track_id) REFERENCES sp_track(track_id)
 ON DELETE CASCADE
 ON UPDATE CASCADE;
 
+-- try to create foreign key
+ALTER TABLE sp_track
+ADD CONSTRAINT fk_isrc
+FOREIGN KEY (isrc) REFERENCES audio_features(isrc)
+ON DELETE CASCADE
+ON UPDATE CASCADE;
 
 
 -- count how many tracks don't have a record in the audio_features: 142.650
@@ -105,6 +106,7 @@ WHERE isrc NOT IN (SELECT isrc FROM audio_features);
 SELECT *
 FROM sp_track
 WHERE isrc IS NULL;
+
 -- we drop them
 SET SQL_SAFE_UPDATES = 0; -- anables deleting rows
 
@@ -133,14 +135,6 @@ SELECT DISTINCT sp.isrc,
 FROM sp_track sp
 WHERE sp.isrc NOT IN (SELECT af.isrc FROM audio_features af); -- 129448 row(s) affected Records: 129448  Duplicates: 0  Warnings: 0
 
--- try to create foreign key
-ALTER TABLE sp_track
-ADD CONSTRAINT fk_isrc
-FOREIGN KEY (isrc) REFERENCES audio_features(isrc)
-ON DELETE CASCADE
-ON UPDATE CASCADE;
-
-SET FOREIGN_KEY_CHECKS = 0;
 
 -- Создаем внешний ключ для sp_artist_release.release_id, указывающий на sp_release.release_id
 ALTER TABLE sp_artist_release
@@ -198,14 +192,14 @@ SELECT
 FROM information_schema.tables
 WHERE table_schema = 'spotify_db';
 
+
+
 select 
 	ar.artist_name
     , t.track_title 
     , t.duration_ms
     , fts.key
     , rl.popularity
-	-- , ar.artist_id
-  --  , artr.track_id
     , DATE_FORMAT(CONVERT(rl.release_date,DATE), '%Y') AS release_year
     , DATE_FORMAT(CONVERT(rl.release_date,DATE), '%m') AS release_month
 from sp_track t
@@ -225,18 +219,9 @@ from sp_track t
 select
      distinct rl.release_title 
     ,  ar.artist_name
-  --  , t.duration_ms
-   --  , (round(t.duration_ms / 1000) DIV 60) as duration_min 
-   -- , (round(t.duration_ms / 1000) MOD 60) as duration_sec
-   -- , fts.key
-    -- , arrl.release_id
     , rl.popularity
-   -- , ar.artist_id
-   -- , artr.track_id
    , rl.release_date
     , DATE_FORMAT(CONVERT(rl.release_date,DATE), '%Y') AS release_year
-  --  , DATE_FORMAT(CONVERT(rl.release_date,DATE), '%m') AS release_month
-    
 from sp_track t
 	join audio_features fts
 	using (isrc)
@@ -289,7 +274,6 @@ from sp_release rl
  
     -- 1. How changed Song duration through the years
     
-
     CREATE TABLE track_duration_summary AS
     with track_duration_year as
     (
@@ -333,7 +317,7 @@ INSERT INTO track_duration_summary_popular (release_year, avg_duration, num_of_t
 				WHEN CHAR_LENGTH(rl.release_date) = 4 THEN rl.release_date
 				WHEN CHAR_LENGTH(rl.release_date) = 7 THEN SUBSTRING(rl.release_date, 1, 4)
 				ELSE DATE_FORMAT(CONVERT(rl.release_date, DATE), '%Y')
-        END AS release_year  -- full date type
+        END AS release_year  
 		from sp_track t
 		join sp_release rl
 		using (release_id)
@@ -348,24 +332,7 @@ INSERT INTO track_duration_summary_popular (release_year, avg_duration, num_of_t
     HAVING num_of_tracks > 1000 
     ORDER BY release_year
     ;       
-        
-    -- -------------  experiments
-    select * from audio_features;
-    
-    select * from audio_features;
-    
-    
-    select 
-		tr.track_title
-		, ar.artist_name
-    from
-    sp_track tr
-    join sp_artist_track artr
-    using (track_id)
-    join sp_artist ar
-    using (artist_id)
-    where ar.artist_name = "Elton John"
-    ;
+
 
 -- distribution of loudness, speechiness, valence, danceability on popularity
 CREATE TABLE loud_speech_valence_dance_vs_popularity AS
@@ -381,6 +348,67 @@ JOIN sp_release rl USING (release_id)
 -- WHERE rl.popularity > 0
 GROUP BY rl.popularity
 ORDER BY rl.popularity
+;
+
+
+-- count avg number of artists per popular tracks through years
+CREATE TABLE artists_pro_track_pop AS
+select 
+	 CAST(sub.release_year AS UNSIGNED) AS release_year
+    , count(track_title) as num_of_tracks
+    , avg(num_of_artists) as avg_num_of_artists
+from 
+(
+select 
+	distinct at.track_id
+    , t.track_title
+	, count(artist_id) over(partition by track_id) as num_of_artists
+    , rl.popularity
+    , CASE 
+				WHEN CHAR_LENGTH(rl.release_date) = 4 THEN rl.release_date
+				WHEN CHAR_LENGTH(rl.release_date) = 7 THEN SUBSTRING(rl.release_date, 1, 4)
+				ELSE DATE_FORMAT(CONVERT(rl.release_date, DATE), '%Y')
+                end as release_year 
+from sp_artist_track at
+join sp_track t
+using (track_id)
+join sp_release rl
+using (release_id)
+where rl.popularity > 0
+) sub
+group by release_year
+having num_of_tracks > 5000
+order by release_year
+;
+
+-- count avg number of artists per non-popular tracks through years
+CREATE TABLE artists_pro_track_nonpop AS
+select 
+	 CAST(sub.release_year AS UNSIGNED) AS release_year
+    , count(track_title) as num_of_tracks
+    , avg(num_of_artists) as avg_num_of_artists
+from 
+(
+select 
+	distinct at.track_id
+    , t.track_title
+	, count(artist_id) over(partition by track_id) as num_of_artists
+    , rl.popularity
+    , CASE 
+				WHEN CHAR_LENGTH(rl.release_date) = 4 THEN rl.release_date
+				WHEN CHAR_LENGTH(rl.release_date) = 7 THEN SUBSTRING(rl.release_date, 1, 4)
+				ELSE DATE_FORMAT(CONVERT(rl.release_date, DATE), '%Y')
+                end as release_year 
+from sp_artist_track at
+join sp_track t
+using (track_id)
+join sp_release rl
+using (release_id)
+where rl.popularity = 0
+) sub
+group by release_year
+having release_year > 1994
+order by release_year
 ;
 
 -- Leon's query
@@ -412,3 +440,23 @@ JOIN sp_release rl using (release_id)
 GROUP BY a.artist_name
 ORDER BY song_count DESC
 LIMIT 20;
+
+
+        
+    -- -------------  experiments
+    select * from audio_features;
+    
+    select * from audio_features;
+    
+    
+    select 
+		tr.track_title
+		, ar.artist_name
+    from
+    sp_track tr
+    join sp_artist_track artr
+    using (track_id)
+    join sp_artist ar
+    using (artist_id)
+    where ar.artist_name = "Elton John"
+    ;
